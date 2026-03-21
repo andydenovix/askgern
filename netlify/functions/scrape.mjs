@@ -1,55 +1,41 @@
 // netlify/functions/scrape.mjs
-// Scrapes DeNovix knowledge sources nightly at 2am UTC.
-// ─────────────────────────────────────────────────────
-// EDIT YOUR SOURCES HERE — add/remove entries as needed
-// Types: "url" | "gdoc" | "pdf"
-// ─────────────────────────────────────────────────────
-
-const SOURCES = [
-  {
-    label: "DeNovix Homepage",
-    url: "https://www.denovix.com",
-    type: "url"
-  },
-  {
-    label: "DS-11 Series Spectrophotometer / Fluorometer",
-    url: "https://www.denovix.com/products/ds-11-fx-spectrophotometer-fluorometer/",
-    type: "url"
-  },
-  {
-    label: "CellDrop Automated Cell Counter",
-    url: "https://www.denovix.com/products/celldrop/",
-    type: "url"
-  },
-  {
-    label: "QFX Fluorometer",
-    url: "https://www.denovix.com/products/qfx-fluorometer/",
-    type: "url"
-  },
-  {
-    label: "DS-Series Product Range",
-    url: "https://www.denovix.com/products/ds-series/",
-    type: "url"
-  },
-  {
-    label: "Fluorescence Quantification Assays",
-    url: "https://www.denovix.com/products/assays/",
-    type: "url"
-  },
-  {
-    label: "DeNovix About Us",
-    url: "https://www.denovix.com/about-us/",
-    type: "url"
-  },
-];
-
-// ─────────────────────────────────────────────────────
+// Crawls denovix.com via sitemap — fetches posts, pages and portfolio content.
+// Runs nightly at 2am UTC.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { getStore } from "@netlify/blobs";
 
 const CACHE_KEY = "gern_knowledge_cache";
-const MAX_CHARS = 15000;
 
+// ── Sitemap config ─────────────────────────────────────────────────────────────
+// We fetch these three sub-sitemaps — they cover all meaningful public content.
+const SUB_SITEMAPS = [
+  "https://www.denovix.com/page-sitemap.xml",      // product pages, support, about
+  "https://www.denovix.com/post-sitemap.xml",       // blog posts and news
+  "https://www.denovix.com/tm_portfolio-sitemap.xml", // technical notes / case studies
+];
+
+// URLs containing these strings are skipped — not useful for Q&A
+const SKIP_PATTERNS = [
+  "/author/", "/tag/", "/category/", "/feed/", "/wp-",
+  "/cart/", "/checkout/", "/my-account/", "/privacy",
+  "/cookie", "/terms", "/login", "/register",
+  "?", "#",
+];
+
+// Prioritise these paths — scraped first and given higher char limits
+const PRIORITY_PATTERNS = [
+  "/products/", "/technical-notes/", "/faq/",
+  "/celldrop/", "/ds-11/", "/ds-series/", "/qfx/",
+];
+
+const MAX_PAGES       = 200;   // hard cap on total pages scraped per run
+const MAX_CHARS_PRI   = 12000; // chars per priority page
+const MAX_CHARS_STD   = 6000;  // chars per standard page
+const FETCH_TIMEOUT   = 18000; // ms per page fetch
+const CONCURRENCY     = 5;     // parallel fetches
+
+// ── HTML → text ───────────────────────────────────────────────────────────────
 function stripHtml(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -57,81 +43,154 @@ function stripHtml(html) {
     .replace(/<nav[\s\S]*?<\/nav>/gi, "")
     .replace(/<footer[\s\S]*?<\/footer>/gi, "")
     .replace(/<header[\s\S]*?<\/header>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&#8[01]7;/g, "'")
     .replace(/\s{3,}/g, "\n\n")
     .trim();
 }
 
-async function scrapeSource(source) {
-  const { label, url, type } = source;
+// Extract page title from HTML
+function extractTitle(html) {
+  const m = html.match(/<title>([^<]+)<\/title>/i);
+  if (!m) return null;
+  return m[1].replace(/\s*[|\-–]\s*DeNovix.*$/i, "").trim();
+}
+
+// ── Sitemap fetching ──────────────────────────────────────────────────────────
+async function fetchSitemapUrls(sitemapUrl) {
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "AskGern-Bot/1.0 (DeNovix Knowledge Assistant)" },
-      signal: AbortSignal.timeout(20000),
+    const res = await fetch(sitemapUrl, {
+      headers: { "User-Agent": "AskGern-Bot/1.0" },
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    let text = "";
-    if (type === "gdoc") {
-      text = await res.text();
-    } else if (type === "pdf") {
-      text = `[PDF source: ${label}]\nURL: ${url}\nNote: PDF document — direct users to download for full content.`;
-    } else {
-      const html = await res.text();
-      text = stripHtml(html);
-    }
-
-    text = text.trim();
-    if (!text || text.length < 30) throw new Error("Could not extract meaningful text");
-
-    return {
-      label, url, type,
-      status: "ready",
-      content: text.slice(0, MAX_CHARS),
-      scrapedAt: new Date().toISOString(),
-    };
+    const xml = await res.text();
+    const urls = [...xml.matchAll(/<loc>(https:\/\/www\.denovix\.com[^<]*)<\/loc>/gi)]
+      .map(m => m[1].trim());
+    return urls;
   } catch (err) {
-    console.error(`[scrape] Failed: ${label} — ${err.message}`);
-    return {
-      label, url, type,
-      status: "error",
-      error: err.message,
-      scrapedAt: new Date().toISOString(),
-    };
+    console.warn(`[scrape] Sitemap fetch failed: ${sitemapUrl} — ${err.message}`);
+    return [];
   }
 }
 
+function shouldSkip(url) {
+  return SKIP_PATTERNS.some(p => url.includes(p));
+}
+
+function isPriority(url) {
+  return PRIORITY_PATTERNS.some(p => url.includes(p));
+}
+
+// ── Page scraping ─────────────────────────────────────────────────────────────
+async function scrapePage(url) {
+  const priority = isPriority(url);
+  const maxChars = priority ? MAX_CHARS_PRI : MAX_CHARS_STD;
+
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "AskGern-Bot/1.0 (DeNovix Knowledge Assistant)" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const title = extractTitle(html) || url;
+    const text = stripHtml(html);
+
+    if (!text || text.length < 80) throw new Error("Insufficient content");
+
+    return {
+      label: title,
+      url,
+      type: "url",
+      priority,
+      status: "ready",
+      content: text.slice(0, maxChars),
+      scrapedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    return { label: url, url, status: "error", error: err.message };
+  }
+}
+
+// Run promises in batches to limit concurrency
+async function batchFetch(items, batchSize, fn) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.allSettled(batch.map(fn));
+    results.push(...batchResults.map(r =>
+      r.status === "fulfilled" ? r.value : { status: "error", error: r.reason?.message }
+    ));
+    // Small pause between batches to be polite to the server
+    if (i + batchSize < items.length) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return results;
+}
+
+// ── Main handler ──────────────────────────────────────────────────────────────
 export default async function handler() {
-  console.log(`[scrape] Starting scrape of ${SOURCES.length} sources…`);
+  console.log("[scrape] Starting DeNovix sitemap crawl…");
 
-  const results = await Promise.allSettled(SOURCES.map(scrapeSource));
-  const scraped = results.map(r =>
-    r.status === "fulfilled" ? r.value : { status: "error", error: r.reason?.message }
-  );
+  // 1. Collect all URLs from the three sub-sitemaps
+  const allUrlSets = await Promise.all(SUB_SITEMAPS.map(fetchSitemapUrls));
+  let allUrls = allUrlSets.flat();
 
-  const ready = scraped.filter(s => s.status === "ready").length;
-  console.log(`[scrape] Done. ${ready}/${SOURCES.length} ready.`);
+  // 2. Deduplicate and filter
+  allUrls = [...new Set(allUrls)].filter(u => !shouldSkip(u));
+  console.log(`[scrape] ${allUrls.length} URLs after filtering`);
 
+  // 3. Sort — priority pages first
+  allUrls.sort((a, b) => {
+    const ap = isPriority(a) ? 0 : 1;
+    const bp = isPriority(b) ? 0 : 1;
+    return ap - bp;
+  });
+
+  // 4. Cap total pages
+  if (allUrls.length > MAX_PAGES) {
+    console.log(`[scrape] Capping at ${MAX_PAGES} pages`);
+    allUrls = allUrls.slice(0, MAX_PAGES);
+  }
+
+  // 5. Scrape all pages in batches
+  console.log(`[scrape] Scraping ${allUrls.length} pages…`);
+  const scraped = await batchFetch(allUrls, CONCURRENCY, scrapePage);
+
+  // 6. Report
+  const ready   = scraped.filter(s => s.status === "ready").length;
+  const errors  = scraped.filter(s => s.status === "error").length;
+  const priority = scraped.filter(s => s.status === "ready" && s.priority).length;
+  console.log(`[scrape] Done: ${ready} ready (${priority} priority), ${errors} errors`);
+
+  // 7. Save to Blobs
   const store = getStore("gern");
   await store.setJSON(CACHE_KEY, {
-    sources: scraped,
+    sources: scraped.filter(s => s.status === "ready"),
     updatedAt: new Date().toISOString(),
+    stats: { ready, errors, total: allUrls.length },
   });
 
   return new Response(
     JSON.stringify({
       ok: true,
       ready,
-      total: SOURCES.length,
-      sources: scraped.map(s => ({ label: s.label, status: s.status, error: s.error })),
+      errors,
+      total: allUrls.length,
+      priority,
+      sources: scraped
+        .filter(s => s.status === "ready")
+        .slice(0, 20)
+        .map(s => ({ label: s.label, url: s.url, priority: s.priority })),
     }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }
-
-// Scheduled function — no custom path allowed
