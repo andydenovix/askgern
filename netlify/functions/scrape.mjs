@@ -29,11 +29,11 @@ const PRIORITY_PATTERNS = [
   "/celldrop/", "/ds-11/", "/ds-series/", "/qfx/",
 ];
 
-const MAX_PAGES       = 200;   // hard cap on total pages scraped per run
-const MAX_CHARS_PRI   = 12000; // chars per priority page
-const MAX_CHARS_STD   = 6000;  // chars per standard page
-const FETCH_TIMEOUT   = 18000; // ms per page fetch
-const CONCURRENCY     = 5;     // parallel fetches
+const MAX_PAGES       = 50;   // hard cap on total pages scraped per run
+const MAX_CHARS_PRI   = 8000; // chars per priority page
+const MAX_CHARS_STD   = 3000;  // chars per standard page
+const FETCH_TIMEOUT   = 10000; // ms per page fetch
+const CONCURRENCY     = 3;     // parallel fetches
 
 // ── HTML → text ───────────────────────────────────────────────────────────────
 function stripHtml(html) {
@@ -139,6 +139,8 @@ async function batchFetch(items, batchSize, fn) {
 // ── Main handler ──────────────────────────────────────────────────────────────
 export default async function handler() {
   console.log("[scrape] Starting DeNovix sitemap crawl…");
+  const START = Date.now();
+  const HARD_LIMIT_MS = 24000; // stop before Netlify's 26s timeout
 
   // 1. Collect all URLs from the three sub-sitemaps
   const allUrlSets = await Promise.all(SUB_SITEMAPS.map(fetchSitemapUrls));
@@ -161,9 +163,21 @@ export default async function handler() {
     allUrls = allUrls.slice(0, MAX_PAGES);
   }
 
-  // 5. Scrape all pages in batches
+  // 5. Scrape all pages in batches — stop if approaching timeout
   console.log(`[scrape] Scraping ${allUrls.length} pages…`);
-  const scraped = await batchFetch(allUrls, CONCURRENCY, scrapePage);
+  const scraped = [];
+  for (let i = 0; i < allUrls.length; i += CONCURRENCY) {
+    if (Date.now() - START > HARD_LIMIT_MS) {
+      console.log(`[scrape] Timeout guard triggered at page ${i}`);
+      break;
+    }
+    const batch = allUrls.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.allSettled(batch.map(scrapePage));
+    scraped.push(...batchResults.map(r =>
+      r.status === "fulfilled" ? r.value : { status: "error", error: r.reason?.message }
+    ));
+    if (i + CONCURRENCY < allUrls.length) await new Promise(r => setTimeout(r, 300));
+  }
 
   // 6. Report
   const ready   = scraped.filter(s => s.status === "ready").length;
