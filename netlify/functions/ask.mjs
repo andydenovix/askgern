@@ -126,7 +126,7 @@ export default async function handler(req) {
       const ready = cache.sources.filter(s => s.status === "ready" && s.content);
       if (ready.length > 0) {
         knowledgeContext = ready
-          .map((s, i) => `### Source ${i + 1}: ${s.label}\n${s.content.slice(0, MAX_CHARS)}`)
+          .map((s, i) => `### Source ${i + 1}: ${s.label}\nURL: ${s.url}\n\n${s.content.slice(0, MAX_CHARS)}`)
           .join("\n\n---\n\n");
         sourcesSummary = `${ready.length} source(s) loaded, last updated ${cache.updatedAt}.`;
       }
@@ -141,8 +141,9 @@ export default async function handler(req) {
 Your role is to help scientists, researchers and laboratory professionals find accurate information about DeNovix products, applications, protocols and specifications.
 
 Guidelines:
-- Answer accurately using the provided knowledge sources, citing them by name where relevant (e.g. "According to [Source Name]…").
-- If the answer is not in the sources, say so clearly and suggest the user visit denovix.com or contact the DeNovix team for further assistance.
+- Answer accurately using the provided knowledge sources. When citing a source, include it as a markdown link using the source's URL, e.g. "According to the [DS-11 Series page](https://www.denovix.com/products/ds-11-fx-spectrophotometer-fluorometer/)…"
+- Where relevant, include a direct link to the most useful page at the end of your answer so the user can read further.
+- If the answer is not in the sources, say so clearly and link to [denovix.com](https://www.denovix.com) or suggest they contact the DeNovix team at [info@denovix.com](mailto:info@denovix.com) for further assistance.
 - Use a professional, collegial tone — helpful and knowledgeable, like a well-informed product specialist.
 - Use markdown for clarity: **bold** key terms, bullet lists for multiple items, headings for structured answers.
 - Keep answers concise and focused. Use more detail only when a technical question genuinely requires it.
