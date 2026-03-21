@@ -1,0 +1,9 @@
+{
+  "name": "ask-gern",
+  "version": "1.0.0",
+  "description": "Ask Gern — DeNovix Knowledge Assistant",
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^6.0.0"
+  }
+}
