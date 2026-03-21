@@ -97,10 +97,11 @@ export default async function handler(req) {
   }
 
   // Parse input
-  let query;
+  let query, history;
   try {
     const body = await req.json();
     query = body.query?.trim();
+    history = Array.isArray(body.history) ? body.history : [];
     if (!query) throw new Error("Missing query");
   } catch {
     return json({ error: "Invalid request body" }, 400, origin);
@@ -168,7 +169,14 @@ ${knowledgeContext ? `\n\nKNOWLEDGE SOURCES:\n\n${knowledgeContext}` : ""}`;
         model: MODEL,
         max_tokens: MAX_TOKENS,
         system: systemPrompt,
-        messages: [{ role: "user", content: query }],
+        messages: [
+          // Include prior turns for context (sanitised)
+          ...history
+            .slice(-10)
+            .filter(m => m.role && m.content && typeof m.content === 'string')
+            .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content.slice(0, 2000) })),
+          { role: "user", content: query },
+        ],
       }),
     });
 
