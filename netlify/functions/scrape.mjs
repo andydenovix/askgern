@@ -36,8 +36,31 @@ const FETCH_TIMEOUT   = 10000; // ms per page fetch
 const CONCURRENCY     = 3;     // parallel fetches
 
 // ── HTML → text ───────────────────────────────────────────────────────────────
+function extractVideoUrls(html) {
+  const videos = [];
+  // YouTube iframes
+  const ytSrcRe = /src=["'][^"']*(?:youtube\.com\/embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})[^"']*/gi;
+  let m;
+  while ((m = ytSrcRe.exec(html)) !== null) {
+    videos.push(`https://www.youtube.com/watch?v=${m[1]}`);
+  }
+  // Vimeo iframes
+  const vimRe = /src=["'][^"']*vimeo\.com\/(?:video\/)?([0-9]+)[^"']*/gi;
+  while ((m = vimRe.exec(html)) !== null) {
+    videos.push(`https://vimeo.com/${m[1]}`);
+  }
+  // YouTube links in anchors
+  const ytLinkRe = /href=["']https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})[^"']*/gi;
+  while ((m = ytLinkRe.exec(html)) !== null) {
+    videos.push(`https://www.youtube.com/watch?v=${m[1]}`);
+  }
+  return [...new Set(videos)]; // deduplicate
+}
+
 function stripHtml(html) {
-  return html
+  // Extract video URLs before stripping
+  const videoUrls = extractVideoUrls(html);
+  let text = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<nav[\s\S]*?<\/nav>/gi, "")
@@ -53,6 +76,11 @@ function stripHtml(html) {
     .replace(/&#8[01]7;/g, "'")
     .replace(/\s{3,}/g, "\n\n")
     .trim();
+  // Append extracted video URLs so they survive into the knowledge cache
+  if (videoUrls.length > 0) {
+    text += "\n\nVIDEOS ON THIS PAGE:\n" + videoUrls.map(u => `- ${u}`).join("\n");
+  }
+  return text;
 }
 
 // Extract page title from HTML
