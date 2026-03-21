@@ -10,6 +10,5 @@
   to = "/.netlify/functions/ask"
   status = 200
 
-# Nightly scrape at 2am UTC
 [functions.scrape]
   schedule = "0 2 * * *"
