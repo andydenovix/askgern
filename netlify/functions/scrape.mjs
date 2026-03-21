@@ -134,4 +134,4 @@ export default async function handler() {
   );
 }
 
-export const config = { path: "/.netlify/functions/scrape" };
+// Scheduled function — no custom path allowed
