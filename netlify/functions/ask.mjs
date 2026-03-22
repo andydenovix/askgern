@@ -5,9 +5,8 @@
 import { getStore } from "@netlify/blobs";
 
 const CACHE_KEY    = "gern_knowledge_cache";
-const MAX_CHARS    = 15000;
 const MODEL        = "claude-sonnet-4-20250514";
-const MAX_TOKENS   = 1024;
+const MAX_TOKENS   = 2048;
 
 // ── Security config ───────────────────────────────────────────────────────────
 const MAX_QUERY_LENGTH  = 600;
@@ -115,7 +114,7 @@ export default async function handler(req) {
     return json({ error: "I can only answer questions about DeNovix products and services." }, 400, origin);
   }
 
-  // Load cached knowledge
+  // Load cached knowledge — only send sources relevant to the query
   let knowledgeContext = "";
   let sourcesSummary = "No sources cached yet.";
 
@@ -125,10 +124,35 @@ export default async function handler(req) {
     if (cache?.sources) {
       const ready = cache.sources.filter(s => s.status === "ready" && s.content);
       if (ready.length > 0) {
-        knowledgeContext = ready
-          .map((s, i) => `### Source ${i + 1}: ${s.label}\nURL: ${s.url}\n\n${s.content.slice(0, MAX_CHARS)}`)
-          .join("\n\n---\n\n");
         sourcesSummary = `${ready.length} source(s) loaded, last updated ${cache.updatedAt}.`;
+
+        // Build query terms from the current question + recent history
+        const recentText = [
+          query,
+          ...history.slice(-4).map(m => m.content)
+        ].join(" ").toLowerCase();
+
+        // Score each source by how many query words appear in its label/url/content preview
+        const queryWords = recentText
+          .replace(/[^a-z0-9\s]/g, " ")
+          .split(/\s+/)
+          .filter(w => w.length > 3);
+
+        const scored = ready.map(s => {
+          const haystack = (s.label + " " + s.url + " " + s.content.slice(0, 500)).toLowerCase();
+          const score = queryWords.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+          return { ...s, score };
+        });
+
+        // Always include top 4 most relevant; fill to 6 if we have budget
+        scored.sort((a, b) => b.score - a.score);
+        const selected = scored.slice(0, 6);
+
+        // Trim content to stay well under token limit (~12k tokens total for sources)
+        const CHARS_PER_SOURCE = Math.floor(10000 / selected.length);
+        knowledgeContext = selected
+          .map((s, i) => `### Source ${i + 1}: ${s.label}\nURL: ${s.url}\n\n${s.content.slice(0, CHARS_PER_SOURCE)}`)
+          .join("\n\n---\n\n");
       }
     }
   } catch (err) {
@@ -161,6 +185,7 @@ ${knowledgeContext ? `\n\nKNOWLEDGE SOURCES:\n\n${knowledgeContext}` : ""}`;
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
+      signal: AbortSignal.timeout(22000), // 22s — stays within Netlify's 26s limit
       headers: {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
@@ -173,7 +198,7 @@ ${knowledgeContext ? `\n\nKNOWLEDGE SOURCES:\n\n${knowledgeContext}` : ""}`;
         messages: [
           // Include prior turns for context (sanitised)
           ...history
-            .slice(-10)
+            .slice(-6)
             .filter(m => m.role && m.content && typeof m.content === 'string')
             .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content.slice(0, 2000) })),
           { role: "user", content: query },
@@ -193,7 +218,12 @@ ${knowledgeContext ? `\n\nKNOWLEDGE SOURCES:\n\n${knowledgeContext}` : ""}`;
     return json({ reply: text }, 200, origin);
   } catch (err) {
     console.error("[ask] Error:", err.message);
-    return json({ error: "Something went wrong. Please try again." }, 502, origin);
+    // Return specific error so client can show a more helpful message
+    const isTimeout = err.name === "TimeoutError" || err.message?.includes("timeout");
+    const msg = isTimeout
+      ? "The request timed out — please try a shorter question or try again."
+      : "Something went wrong. Please try again in a moment.";
+    return json({ error: msg }, 502, origin);
   }
 }
 
